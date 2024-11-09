@@ -1,0 +1,413 @@
+//@version=5
+indicator("MERGE - [MACD] and [SRchannel]", "[MACD] and [SRchannel]", overlay = true, max_bars_back = 501)
+prd = input.int(10, title="Pivot Period", minval = 4, maxval = 30, group = "Settings 🔨", tooltip="Used while calculating Pivot Points, checks left&right bars")
+ppsrc = input.string('High/Low', title="Source", options = ['High/Low', 'Close/Open'], group = "Settings 🔨", tooltip="Source for Pivot Points")
+ChannelW = input.int(5, title = "Maximum Channel Width %", minval = 1, maxval = 8, group = "Settings 🔨", tooltip="Calculated using Highest/Lowest levels in 300 bars")
+minstrength = input.int(1, title = "Minimum Strength", minval = 1, group = "Settings 🔨", tooltip = "Channel must contain at least 2 Pivot Points")
+maxnumsr = input.int(6, title = "Maximum Number of S/R", minval = 1, maxval = 10, group = "Settings 🔨", tooltip = "Maximum number of Support/Resistance Channels to Show") - 1
+loopback = input.int(290, title = "Loopback Period", minval = 100, maxval = 400, group = "Settings 🔨", tooltip="While calculating S/R levels it checks Pivots in Loopback Period")
+res_col = input.color(color.new(color.red, 75), title = "Resistance Color", group = "Colors 🟡🟢🟣")
+sup_col = input.color(color.new(color.lime, 75), title = "Support Color", group = "Colors 🟡🟢🟣")
+inch_col = input.color(color.new(color.gray, 75), title = "Color When Price in Channel", group = "Colors 🟡🟢🟣")
+showpp = input.bool(false, title = "Show Pivot Points", group = "Extras ⏶⏷")
+showsrbroken = input.bool(false, title = "Show Broken Support/Resistance", group = "Extras ⏶⏷")
+showthema1en = input.bool(false, title = "MA 1", inline = "ma1")
+showthema1len = input.int(50, title = "", inline = "ma1")
+showthema1type = input.string("SMA", title = "", options = ["SMA", "EMA"], inline = "ma1")
+showthema2en = input.bool(false, title = "MA 2", inline = "ma2")
+showthema2len = input.int(200, title = "", inline = "ma2")
+showthema2type = input.string("SMA", title = "", options = ["SMA", "EMA"], inline = "ma2")
+
+// Moving Averages
+ma1 = showthema1en ? (showthema1type == "SMA" ? ta.sma(close, showthema1len) : ta.ema(close, showthema1len)) : na
+ma2 = showthema2en ? (showthema2type == "SMA" ? ta.sma(close, showthema2len) : ta.ema(close, showthema2len)) : na
+
+plot(ma1, color = na(ma1) ? na : color.blue)
+plot(ma2, color = na(ma2) ? na : color.red)
+
+// Determine Pivot High/Low
+float src1 =  ppsrc == 'High/Low' ? high : math.max(close, open)
+float src2 =  ppsrc == 'High/Low' ? low : math.min(close, open)
+float ph = ta.pivothigh(src1, prd, prd)
+float pl = ta.pivotlow(src2, prd, prd) 
+
+// Plot Pivot Points
+plotshape(not na(ph) and showpp, text = "H", style = shape.labeldown, color = na, textcolor = color.red, location = location.abovebar, offset = -prd)
+plotshape(not na(pl) and showpp, text = "L", style = shape.labelup, color = na, textcolor = color.lime, location = location.belowbar, offset = -prd)
+
+// Calculate Maximum S/R Channel Width
+float prdhighest = ta.highest(high, 300)
+float prdlowest = ta.lowest(low, 300)
+float cwidth = (prdhighest - prdlowest) * ChannelW / 100
+
+// Store Pivot Levels
+var float[] pivotvals= array.new_float(0)
+var int[] pivotlocs= array.new_int(0)
+if (not na(ph) or not na(pl))
+    array.unshift(pivotvals, na(ph) ? pl : ph)
+    array.unshift(pivotlocs, bar_index)
+    for x = array.size(pivotvals) - 1 to 0
+        if bar_index - array.get(pivotlocs, x) > loopback // Remove old pivot points
+            array.pop(pivotvals)
+            array.pop(pivotlocs)
+            continue
+        break
+
+// Calculate SR Channel for a Pivot Point
+get_sr_vals(ind)=>
+    float lo = array.get(pivotvals, ind)
+    float hi = lo
+    int numpp = 0
+    for y = 0 to array.size(pivotvals) - 1
+        float cpp = array.get(pivotvals, y)
+        float wdth = cpp <= hi ? hi - cpp : cpp - lo
+        if wdth <= cwidth // Fits the max channel width?
+            lo := math.min(lo, cpp)
+            hi := math.max(hi, cpp)
+            numpp += 20 // Each pivot point added as 20
+    [hi, lo, numpp]
+
+// Manage SR Channels and Sort New Channels on New Pivot Points
+var float[] suportresistance = array.new_float(20, 0)
+
+changeit(x, y)=>
+    float tmp = array.get(suportresistance, y * 2)
+    array.set(suportresistance, y * 2, array.get(suportresistance, x * 2))
+    array.set(suportresistance, x * 2, tmp)
+    tmp := array.get(suportresistance, y * 2 + 1)
+    array.set(suportresistance, y * 2 + 1, array.get(suportresistance, x * 2 + 1))
+    array.set(suportresistance, x * 2 + 1, tmp)
+    
+if (not na(ph) or not na(pl))
+    float[] supres = array.new_float(0)
+    float[] stren = array.new_float(10, 0)
+    
+    for x = 0 to array.size(pivotvals) - 1
+        [hi, lo, strength] = get_sr_vals(x)
+        array.push(supres, strength)
+        array.push(supres, hi)
+        array.push(supres, lo)
+    
+    for x = 0 to array.size(pivotvals) - 1
+        float h = array.get(supres, x * 3 + 1)
+        float l = array.get(supres, x * 3 + 2)
+        int s = 0
+        for y = 0 to loopback
+            if (high[y] <= h and high[y] >= l) or
+               (low[y] <= h and low[y] >= l)
+                s += 1
+        array.set(supres, x * 3, array.get(supres, x * 3) + s)
+    
+    array.fill(suportresistance, 0)
+    int src = 0
+    for x = 0 to array.size(pivotvals) - 1
+        float stv = -1.
+        int stl = -1
+        for y = 0 to array.size(pivotvals) - 1
+            if array.get(supres, y * 3) > stv and array.get(supres, y * 3) >= minstrength * 20
+                stv := array.get(supres, y * 3)
+                stl := y
+        if stl >= 0
+            float hh = array.get(supres, stl * 3 + 1)
+            float ll = array.get(supres, stl * 3 + 2)
+            array.set(suportresistance, src * 2, hh)
+            array.set(suportresistance, src * 2 + 1, ll)
+            array.set(stren, src, array.get(supres, stl * 3))
+            for y = 0 to array.size(pivotvals) - 1
+                if (array.get(supres, y * 3 + 1) <= hh and array.get(supres, y * 3 + 1) >= ll) or
+                   (array.get(supres, y * 3 + 2) <= hh and array.get(supres, y * 3 + 2) >= ll)
+                    array.set(supres, y * 3, -1)
+
+            src += 1
+            if src >= 10
+                break
+    
+    for x = 0 to 8
+        for y = x + 1 to 9
+            if array.get(stren, y) > array.get(stren, x)
+                float tmp = array.get(stren, y)
+                array.set(stren, y, array.get(stren, x))
+                changeit(x, y)
+
+// Function for Level Retrieval
+get_level(ind)=>
+    float ret = na
+    if ind < array.size(suportresistance) and array.get(suportresistance, ind) != 0
+        ret := array.get(suportresistance, ind)
+    ret
+
+// Function for Color Retrieval
+get_color(ind)=>
+    color ret = na
+    if ind < array.size(suportresistance) and array.get(suportresistance, ind) != 0
+        ret := array.get(suportresistance, ind) > close and array.get(suportresistance, ind + 1) > close ? res_col :
+               array.get(suportresistance, ind) < close and array.get(suportresistance, ind + 1) < close ? sup_col :
+               inch_col
+    ret
+
+var box[] srchannels = array.new_box(10)
+for x = 0 to math.min(9, maxnumsr)
+    box.delete(array.get(srchannels, x))
+    color srcol = get_color(x * 2)
+    if not na(srcol)
+        array.set(srchannels, x, 
+                  box.new(left = bar_index, top = get_level(x * 2), right = bar_index + 1, bottom = get_level(x * 2 + 1), 
+                          border_color = srcol, 
+                          border_width = 1,
+                          extend = extend.both, 
+                          bgcolor = srcol))
+
+// Check for Resistance or Support Breaks
+var bool resistancebroken = false
+var bool supportbroken = false
+
+bool not_in_a_channel = true
+for x = 0 to math.min(9, maxnumsr)
+    if close <= array.get(suportresistance, x * 2) and close >= array.get(suportresistance, x * 2 + 1) 
+        not_in_a_channel := false
+
+if not_in_a_channel
+    for x = 0 to math.min(9, maxnumsr)
+        if close[1] <= array.get(suportresistance, x * 2) and close > array.get(suportresistance, x * 2)
+            resistancebroken := true
+        if close[1] >= array.get(suportresistance, x * 2 + 1) and close < array.get(suportresistance, x * 2 + 1)
+            supportbroken := true
+
+// Alerts and Shapes for Broken Levels
+alertcondition(resistancebroken, title = "Resistance Broken", message = "Resistance Broken")
+alertcondition(supportbroken, title = "Support Broken", message = "Support Broken")
+plotshape(showsrbroken and resistancebroken, style = shape.triangleup, location = location.belowbar, color = color.new(color.lime, 0), size = size.tiny)
+plotshape(showsrbroken and supportbroken, style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny)
+
+
+
+priceSource        = input.source(close, title="Price Source")
+// Filter Parameters
+useMAFilter        = input.bool(true, title="Use MA Filter")
+maFilterType       = input.string("EMA", title="MA Filter Type", options=["EMA", "SMA", "WMA", "RMA", "VWMA"])
+maFilterLength     = input.int(200, title="MA Filter Length")
+useADXFilter       = input.bool(false, title="Use ADX Filter")
+adxFilterLength    = input.int(14, title="ADX Filter Length")
+adxFilterThreshold = input.int(20, title="ADX Filter Threshold")
+
+// Indicator Parameters
+macdFastLength     = input.int(12, title="MACD Fast Length")
+macdSlowLength     = input.int(26, title="MACD Slow Length")
+macdSignalLength   = input.int(9, title="MACD Signal Smoothing", minval=1, maxval=50)
+
+// Backtest Parameters
+enableBacktest   = input(true, title="Enable Visual Backtest Module?")
+entryType        = input.string("Buy and Sell", title="Backtest Type", options=["Buy and Sell", "Buy", "Sell"])
+stopLossType     = input.string("ATR", title="Stop Loss Type", options=["ATR", "Fixed Point", "X bar high/low"])
+stopLossATRLen   = input.int(14, title="Stop Loss ATR Period", minval=1, step=1)
+stopLossATR      = input.float(2.5, title="Stop Loss ATR Multiplier", minval=0.1, step=0.1)
+stopLossFixed    = input.float(0.0005, title="Stop Loss Fixed Point", minval=0.00001, step=0.1)
+stopLossBar      = input.int(3, title="Stop Loss HiLo [x] bar", minval=1, step=1)
+rewardRatio      = input.float(1.5, title="TP Reward to Risk Ratio", minval=0.1, step=0.1)
+
+externalProtocol = input.string("Signal With Filter", title="External Signal Protocol", options=["Signal With Filter", "Signal Without Filter", "Signal and Stop With Filter", "Signal and Stop Without Filter"])
+
+enableAlert    = input(false, title="Enable Alert?")
+alertType      = input.string("Buy and Sell", title="Alert Type", options=["Buy and Sell", "Buy", "Sell"])
+
+smooth(src, len) =>
+    float smoothedSrc = 0.0
+    smoothedSrc := nz(smoothedSrc[1]) - (nz(smoothedSrc[1]) / len) + src
+
+directionUp   = high - high[1] > low[1] - low ? math.max(high - high[1], 0) : 0
+directionDown = low[1] - low > high - high[1] ? math.max(low[1] - low, 0) : 0
+diPlus        = smooth(directionUp, adxFilterLength) / smooth(ta.tr, adxFilterLength) * 100
+diMinus       = smooth(directionDown, adxFilterLength) / smooth(ta.tr, adxFilterLength) * 100
+dx            = math.abs(diPlus - diMinus) / (diPlus + diMinus) * 100
+adx           = ta.rma(dx, adxFilterLength)
+
+// Filter Indicator Calculation
+getMA(type, length) =>
+    float maValue = na
+    if (type == "EMA")
+        maValue := ta.ema(priceSource, length)
+    if (type == "SMA")
+        maValue := ta.sma(priceSource, length)
+    if (type == "WMA")
+        maValue := ta.wma(priceSource, length)
+    if (type == "RMA")
+        maValue := ta.rma(priceSource, length)
+    if (type == "VWMA")
+        maValue := ta.vwma(priceSource, length)
+    maValue
+
+maFilter = getMA(maFilterType, maFilterLength)
+
+macdFastMA  = ta.ema(priceSource, macdFastLength)
+macdSlowMA  = ta.ema(priceSource, macdSlowLength)
+macdMain    = macdFastMA - macdSlowMA
+macdSignal  = ta.ema(macdMain, macdSignalLength)
+
+uptrend   = false
+downtrend = false
+
+if (((useMAFilter == true and close > maFilter) or useMAFilter == false) and ((useADXFilter == true and adx > adxFilterThreshold) or useADXFilter == false))
+    uptrend := true
+
+if (((useMAFilter == true and close < maFilter) or useMAFilter == false) and ((useADXFilter == true and adx > adxFilterThreshold) or useADXFilter == false))
+    downtrend := true
+
+buySignal  = macdMain < 0 and ta.crossover(macdMain, macdSignal)
+sellSignal = macdMain > 0 and ta.crossunder(macdMain, macdSignal)
+
+plotMA = useMAFilter ? maFilter : na
+plot(plotMA, color=color.orange, linewidth=2)
+
+var int openPosition  = 0
+var int longPosition  = 0
+var int shortPosition = 0
+
+var float entryPrice  = na
+var float stopLoss    = na
+var float takeProfit  = na
+
+var float ep = na
+var float sl = na
+var float tp = na
+
+openPosition  := (openPosition[1] == 1) ? 1 : 0
+longPosition  := (longPosition[1] == 1) ? 1 : 0
+shortPosition := (shortPosition[1] == 1) ? 1 : 0
+
+ep := (openPosition[1] == 1) ? ep[1] : na
+sl := (openPosition[1] == 1) ? sl[1] : na
+tp := (openPosition[1] == 1) ? tp[1] : na
+
+atr      = ta.sma(ta.tr, stopLossATRLen)
+prevHigh = ta.highest(high, stopLossBar)
+prevLow  = ta.lowest(low, stopLossBar)
+
+calculateStopLoss(entry, signal) =>
+    stopLossValue = 0.0
+    if (signal == "Buy")
+        if (stopLossType == "ATR")
+            stopLossValue := entry - (atr * stopLossATR)
+        if (stopLossType == "Fixed Point")
+            stopLossValue := entry - stopLossFixed
+        if (stopLossType == "X bar high/low")
+            stopLossValue := prevLow - stopLossFixed
+    if (signal == "Sell")
+        if (stopLossType == "ATR")
+            stopLossValue := entry + (atr * stopLossATR)
+        if (stopLossType == "Fixed Point")
+            stopLossValue := entry + stopLossFixed
+        if (stopLossType == "X bar high/low")
+            stopLossValue := prevHigh + stopLossFixed
+    stopLossValue
+
+if (uptrend and buySignal)
+    entryPrice := close
+    stopLoss := math.min(calculateStopLoss(entryPrice, "Buy"), low - (atr * 0.2))
+    takeProfit := (entryPrice + ((entryPrice - stopLoss) * rewardRatio))
+
+if (downtrend and sellSignal)
+    entryPrice := close
+    stopLoss := math.max(calculateStopLoss(entryPrice, "Sell"), high + (atr * 0.2))
+    takeProfit := (entryPrice - ((stopLoss - entryPrice) * rewardRatio))
+
+if (enableBacktest and entryType != "Sell" and openPosition == 0 and uptrend and buySignal)
+    longPosition := 1
+    openPosition := 1
+    ep := entryPrice
+    sl := stopLoss
+    tp := takeProfit
+
+if (enableBacktest and entryType != "Buy" and openPosition == 0 and downtrend and sellSignal)
+    shortPosition := 1
+    openPosition := 1
+    ep := entryPrice
+    sl := stopLoss
+    tp := takeProfit
+
+bool longProfitLabel  = false
+bool shortProfitLabel = false
+bool longLossLabel    = false
+bool shortLossLabel   = false
+
+// Exit Long Condition
+if (longPosition[0] == 1 and low <= sl)
+    longPosition := 0
+    openPosition := 0
+    longLossLabel := true
+
+if (longPosition[0] == 1 and high >= tp)
+    longPosition := 0
+    openPosition := 0
+    longProfitLabel := true
+
+if (shortPosition[0] == 1 and high >= sl)
+    shortPosition := 0
+    openPosition := 0
+    shortLossLabel := true
+
+if (shortPosition[0] == 1 and low <= tp)
+    shortPosition := 0
+    openPosition := 0
+    shortProfitLabel := true
+
+plotEntry = plot(ep, title="Entry Level", color=color.blue, linewidth=1, style=plot.style_linebr)
+plotStopLoss = plot(sl, title="Stop Loss", color=color.red, linewidth=2, style=plot.style_linebr)
+plotTakeProfit = plot(tp, title="Take Profit", color=color.green, linewidth=2, style=plot.style_linebr)
+
+fill(plotTakeProfit, plotEntry, title="TP Background", color=color.green, transp=75)
+fill(plotStopLoss, plotEntry, title="SL Background", color=color.red, transp=75)
+
+plotshape(longProfitLabel, title="Profit", text="Buy\nProfit", color=color.green, style=shape.labeldown, location=location.abovebar, size=size.small, textcolor=color.white, editable=false)
+plotshape(longLossLabel, title="Loss", text="Buy\nLoss", color=color.red, style=shape.labelup, location=location.belowbar, size=size.small, textcolor=color.white, editable=false)
+plotshape(shortProfitLabel, title="Profit", text="Sell\nProfit", color=color.green, style=shape.labelup, location=location.belowbar, size=size.small, textcolor=color.white, editable=false)
+plotshape(shortLossLabel, title="Loss", text="Sell\nLoss", color=color.red, style=shape.labeldown, location=location.abovebar, size=size.small, textcolor=color.white, editable=false)
+
+// Alert Parameters
+
+bool alertBuy  = na
+bool alertSell = na
+
+// Set Buy alert
+if (enableAlert and alertType != "Sell" and uptrend and buySignal)
+    alertBuy := true
+
+// Set Sell alert
+if (enableAlert and alertType != "Buy" and downtrend and sellSignal)
+    alertSell := true
+
+plotshape(alertBuy, title="Buy Signal", color=color.green, style=shape.triangleup, location=location.belowbar, size=size.tiny, text="Buy", textcolor=color.green)
+plotshape(alertSell, title="Sell Signal", color=color.red, style=shape.triangledown, location=location.abovebar, size=size.tiny, text="Sell", textcolor=color.red)
+
+alertcondition(alertBuy, title='MACD Buy', message='MACD Buy Signal')
+alertcondition(alertSell, title='MACD Sell', message='MACD Sell Signal')
+
+fudgeStop(stop, fudgeDir) => stop == 1.0 or stop == 2.0 or stop == 3.0 ? stop + syminfo.mintick * fudgeDir : stop
+
+float bteMarker = 0
+
+if (externalProtocol == "Signal and Stop With Filter")
+    if (uptrend and buySignal)
+        bteMarker := fudgeStop(stopLoss, 1)
+    if (downtrend and sellSignal)
+        bteMarker := -fudgeStop(stopLoss, -1)
+
+if (externalProtocol == "Signal and Stop Without Filter")
+    if (buySignal)
+        bteMarker := fudgeStop(stopLoss, 1)
+    if (sellSignal)
+        bteMarker := -fudgeStop(stopLoss, -1)
+
+if (externalProtocol == "Signal With Filter")
+    if (uptrend and buySignal)
+        bteMarker := 2
+    if (downtrend and sellSignal)
+        bteMarker := -2
+
+if (externalProtocol == "Signal Without Filter")
+    if (buySignal)
+        bteMarker := 2
+    if (sellSignal)
+        bteMarker := -2
+
+plot(bteMarker == 0 ? na : bteMarker, "EW BTE Signal", display=display.none)
+
